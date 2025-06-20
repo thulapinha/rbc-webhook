@@ -3,12 +3,12 @@
   "version": "1.0.0",
   "main": "webhook.js",
   "type": "module",
+  "scripts": {
+    "start": "node webhook.js"
+  },
   "dependencies": {
     "axios": "^1.6.2",
     "express": "^4.18.2",
-    "parse/node": "^4.0.0"
-  },
-  "scripts": {
-    "start": "node webhook.js"
+    "parse": "^4.0.0"
   }
 }
