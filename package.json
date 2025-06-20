@@ -2,7 +2,6 @@
   "name": "rbc-webhook",
   "version": "1.0.0",
   "main": "webhook.js",
-  "type": "module",
   "scripts": {
     "start": "node webhook.js"
   },
