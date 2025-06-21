@@ -6,7 +6,7 @@ const app = express();
 app.use(express.json());
 
 // ✅ Credenciais de produção – verifique se o token foi copiado exatamente:
-const MP_ACCESS_TOKEN = "APP_USR-2425109007347629-062014-4aebea93a2ceaa33770018567f062c3-40790315";
+const MP_ACCESS_TOKEN = "APP_USR-2425109007347629-062014-4aebea93a2ceaaa33770018567f062c3-40790315";
 const PARSE_APP_ID = "Fd6ksAkglKa2CFerh46JHEMOGsqbqXUIRfPOFLOz";
 const PARSE_JS_KEY = "UKqUKChgVWiNIXmMQA1WIkdnjOFrt28cGy68UFWw";
 const PARSE_SERVER_URL = "https://parseapi.back4app.com";
