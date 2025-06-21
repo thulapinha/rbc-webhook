@@ -5,7 +5,7 @@ const Parse = require('parse/node');
 const app = express();
 app.use(express.json());
 
-// ✅ Credenciais de produção – atenção: certifique-se de que o token esteja correto!
+// ✅ Credenciais de produção – confirme que o token está correto (atenção a possíveis espaços ou caracteres extras)
 const MP_ACCESS_TOKEN = "APP_USR-2425109007347629-062014-4aebea93a2ceaaa33770018567f062c3-40790315";
 const PARSE_APP_ID = "Fd6ksAkglKa2CFerh46JHEMOGsqbqXUIRfPOFLOz";
 const PARSE_JS_KEY = "UKqUKChgVWiNIXmMQA1WIkdnjOFrt28cGy68UFWw";
@@ -24,7 +24,7 @@ app.get('/pagamento', (req, res) => {
 app.post('/pagamento', async (req, res) => {
   console.log("🔔 Notificação recebida:", req.body);
 
-  // 📌 Extrai o paymentId de forma flexível, mas prioriza notificações que contenham data.id
+  // 📌 Extrai o paymentId de forma flexível – priorizando notificações que contenham data.id
   const paymentId =
     req.body?.data?.id ||
     (req.body?.resource && req.body.topic === "payment" ? req.body.resource : null);
@@ -59,8 +59,12 @@ app.post('/pagamento', async (req, res) => {
       console.log(`✅ Pagamento aprovado: R$${valor} para userId: ${userId}`);
 
       try {
-        // Chama a Cloud Function addSaldo usando a master key para garantir acesso liberado
-        await Parse.Cloud.run("addSaldo", { userId, valor, referencia: pagamento.id }, { useMasterKey: true });
+        // Chama a Cloud Function addSaldo com o master key para ignorar restrições de segurança
+        await Parse.Cloud.run(
+          "addSaldo",
+          { userId, valor, referencia: pagamento.id },
+          { useMasterKey: true }
+        );
         console.log("🪙 Saldo atualizado com sucesso!");
       } catch (cloudError) {
         console.error("❌ Erro na Cloud Function addSaldo:", cloudError);
@@ -71,10 +75,15 @@ app.post('/pagamento', async (req, res) => {
 
     res.sendStatus(200);
   } catch (error) {
-    console.error("❌ Erro ao consultar pagamento:", error.response ? error.response.data : error.message);
+    console.error(
+      "❌ Erro ao consultar pagamento:",
+      error.response ? error.response.data : error.message
+    );
     res.sendStatus(500);
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Webhook ativo na porta ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`🚀 Webhook ativo na porta ${PORT}`)
+);
