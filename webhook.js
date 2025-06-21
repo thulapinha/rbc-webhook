@@ -5,14 +5,15 @@ const Parse = require('parse/node');
 const app = express();
 app.use(express.json());
 
-// ✅ Credenciais de produção – confirme que o token está correto (atenção a possíveis espaços ou caracteres extras)
+// ✅ Credenciais de produção – verifique se os valores estão exatamente corretos:
 const MP_ACCESS_TOKEN = "APP_USR-2425109007347629-062014-4aebea93a2ceaaa33770018567f062c3-40790315";
-const PARSE_APP_ID = "Fd6ksAkglKa2CFerh46JHEMOGsqbqXUIRfPOFLOz";
-const PARSE_JS_KEY = "UKqUKChgVWiNIXmMQA1WIkdnjOFrt28cGy68UFWw";
+const PARSE_APP_ID     = "Fd6ksAkglKa2CFerh46JHEMOGsqbqXUIRfPOFLOz";
+const PARSE_JS_KEY     = "UKqUKChgVWiNIXmMQA1WIkdnjOFrt28cGy68UFWw";
+const PARSE_MASTER_KEY = "Ou385YEpEfoT3gZ6hLSbTfKZYQtTgNA7WNBnv7ia"; // Nova variável adicionada
 const PARSE_SERVER_URL = "https://parseapi.back4app.com";
 
-// 🔧 Inicializa o Parse
-Parse.initialize(PARSE_APP_ID, PARSE_JS_KEY);
+// 🔧 Inicializa o Parse com a Master Key
+Parse.initialize(PARSE_APP_ID, PARSE_JS_KEY, PARSE_MASTER_KEY);
 Parse.serverURL = PARSE_SERVER_URL;
 
 // GET para teste do webhook
@@ -49,7 +50,7 @@ app.post('/pagamento', async (req, res) => {
 
     if (pagamento.status === "approved") {
       const userId = pagamento.external_reference;
-      const valor = pagamento.transaction_amount; // ou transaction_amount, conforme o retorno
+      const valor  = pagamento.transaction_amount;
 
       if (!userId || !valor) {
         console.warn("⚠️ Pagamento aprovado mas faltando userId ou valor.");
@@ -59,7 +60,7 @@ app.post('/pagamento', async (req, res) => {
       console.log(`✅ Pagamento aprovado: R$${valor} para userId: ${userId}`);
 
       try {
-        // Chama a Cloud Function addSaldo com o master key para ignorar restrições de segurança
+        // Chama a Cloud Function addSaldo utilizando o master key (já configurado na inicialização)
         await Parse.Cloud.run(
           "addSaldo",
           { userId, valor, referencia: pagamento.id },
