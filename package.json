@@ -1,13 +1,8 @@
 {
-  "name": "rbc-webhook",
-  "version": "1.0.0",
-  "main": "webhook.js",
-  "scripts": {
-    "start": "node webhook.js"
-  },
+  "type": "module",
   "dependencies": {
-    "axios": "^1.6.2",
-    "express": "^4.18.2",
-    "parse": "^4.0.0"
+    "axios": "^1.10.0",
+    "express": "^5.1.0",
+    "parse": "^6.1.1"
   }
 }
