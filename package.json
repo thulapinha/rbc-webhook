@@ -4,5 +4,8 @@
     "axios": "^1.10.0",
     "express": "^5.1.0",
     "parse": "^6.1.1"
+  },
+  "scripts": {
+    "start": "node webhook.js"
   }
 }
