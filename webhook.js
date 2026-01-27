@@ -1,12 +1,9 @@
 // File: webhook.js
-// Webhook Mercado Pago — Render (ESM / Node 22)
-// ✅ Não quebra por "type": "module"
-// ✅ Busca payment no MP
+// Express webhook para Mercado Pago (Render)
+// ✅ ESM (package.json com "type": "module")
+// ✅ Idempotente (não credita 2x)
 // ✅ Atualiza PaymentsV2 no Parse
-// ✅ Crédito idempotente (não credita 2x)
-
-// IMPORTANTÃO:
-// - Em ESM no Node 22, Parse precisa ser importado como "parse/node.js"
+// ✅ Extrai userId por metadata.user_id (novo) e fallback no external_reference (legado)
 
 import express from "express";
 import axios from "axios";
@@ -16,32 +13,39 @@ const app = express();
 app.use(express.json());
 
 // =====================================================
-// 🔐 CONFIG (use ENV no Render pra não vazar segredo)
+// 🔐 CONFIG — USE ENV (preferível) + fallback
 // =====================================================
-const MP_MODE = (process.env.MP_MODE || "test").trim().toLowerCase(); // test|prod
+const MP_MODE = (process.env.MP_MODE || "test").trim().toLowerCase(); // "test" | "prod"
 
 const MP_KEYS = {
   test: {
-    accessToken: (process.env.MP_ACCESS_TOKEN_TEST || "APP_USR-712868030410210-012422-c7031be0b237288c2ffe5c809e99e5f7-2510340016").trim(),
+    accessToken: (process.env.MP_ACCESS_TOKEN_TEST || "TEST-APP_USR-712868030410210-012422-c7031be0b237288c2ffe5c809e99e5f7-2510340016").trim(),
   },
   prod: {
-    accessToken: (process.env.MP_ACCESS_TOKEN || "APP_USR-f2170185-fbab-4ad0-958c-833afcb7e3b0").trim(),
+    accessToken: (process.env.MP_ACCESS_TOKEN || "APP_USR-2425109007347629-062014-4aebea93a2ceaaa33770018567f062c3-40790315").trim(),
   },
 };
 
 function mpAccessToken() {
-  const cfg = MP_KEYS[MP_MODE === "prod" ? "prod" : "test"];
-  return (cfg.accessToken || "").trim();
-}
-// ✅ Credenciais Parse (ENV > fallback hardcoded)
-const PARSE_APP_ID = (process.env.PARSE_APP_ID || "Fd6ksAkglKa2CFerh46JHEMOGsqbqXUIRfPOFLOz").trim();
-const PARSE_JS_KEY = (process.env.PARSE_JS_KEY || "UKqUKChgVWiNIXmMQA1WIkdnjOFrt28cGy68UFWw").trim();
-const PARSE_MASTER_KEY = (process.env.PARSE_MASTER_KEY || "Ou385YEpEfoT3gZ6hLSbTfKZYQtTgNA7WNBnv7ia").trim();
-const PARSE_SERVER_URL = (process.env.PARSE_SERVER_URL || "https://parseapi.back4app.com").trim();
+  const mode = MP_MODE === "prod" ? "prod" : "test";
+  const token = (MP_KEYS[mode].accessToken || "").trim();
 
-if (!PARSE_APP_ID || !PARSE_JS_KEY || !PARSE_MASTER_KEY) {
-  console.warn("⚠️ Parse keys faltando. Configure no Render > Environment.");
+  // 🚨 trava anti-mistura (economiza dor)
+  if (mode === "test" && token.startsWith("APP_USR-")) {
+    throw new Error("MP_MODE=test mas accessToken é LIVE (APP_USR). Troque por TEST- (credenciais de teste).");
+  }
+  if (mode === "prod" && token.startsWith("TEST-")) {
+    throw new Error("MP_MODE=prod mas accessToken é TEST-. Troque por APP_USR (produção).");
+  }
+
+  return token;
 }
+
+// ✅ Credenciais Parse (ENV > fallback hardcoded)
+const PARSE_APP_ID = (process.env.PARSE_APP_ID || "COLE_PARSE_APP_ID").trim();
+const PARSE_JS_KEY = (process.env.PARSE_JS_KEY || "COLE_PARSE_JS_KEY").trim();
+const PARSE_MASTER_KEY = (process.env.PARSE_MASTER_KEY || "COLE_PARSE_MASTER_KEY").trim();
+const PARSE_SERVER_URL = (process.env.PARSE_SERVER_URL || "https://parseapi.back4app.com").trim();
 
 // Init Parse
 Parse.initialize(PARSE_APP_ID, PARSE_JS_KEY, PARSE_MASTER_KEY);
@@ -51,8 +55,12 @@ Parse.serverURL = PARSE_SERVER_URL;
 // Helpers
 // =====================================================
 function toInt(x) {
-  const n = parseInt(x, 10);
-  return Number.isFinite(n) ? n : null;
+  if (typeof x === "number") return x;
+  if (typeof x === "string") {
+    const n = parseInt(x, 10);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
 function parseUserIdFromExternalRef(externalRef) {
@@ -69,19 +77,19 @@ function parseUserIdFromExternalRef(externalRef) {
 
 async function mpGetPayment(paymentId) {
   const token = mpAccessToken();
-  if (!token) throw new Error("MP access token não configurado (ENV).");
+  if (!token) throw new Error("MP access token não configurado no webhook.");
 
   const { data } = await axios.get(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
     headers: { Authorization: `Bearer ${token}` },
     timeout: 15000,
   });
-
   return data;
 }
 
 async function creditSaldoIdempotente({ userId, valor, referencia }) {
   const userQuery = new Parse.Query(Parse.User);
-  const user = await userQuery.get(userId, { useMasterKey: true });
+  userQuery.equalTo("objectId", userId);
+  const user = await userQuery.first({ useMasterKey: true });
   if (!user) throw new Error("Usuário não encontrado para crédito.");
 
   let saldoAtual = user.get("saldo");
@@ -99,6 +107,7 @@ async function creditSaldoIdempotente({ userId, valor, referencia }) {
   user.set("saldo", novoSaldo);
   historico.push(refStr);
   user.set("historico", historico);
+
   await user.save(null, { useMasterKey: true });
 
   const hist = new Parse.Object("SaldoHistorico");
@@ -144,36 +153,43 @@ async function upsertPaymentV2({ mpPaymentId, status, statusDetail, userId, valo
 // =====================================================
 // Rotas
 // =====================================================
-app.get("/pagamento", (_, res) => res.status(200).send("✅ Webhook OK"));
+app.get("/pagamento", (_req, res) => res.status(200).send("✅ Webhook OK (GET)"));
 
 app.post("/pagamento", async (req, res) => {
-  const paymentIdRaw = req.body?.data?.id || req.body?.resource || null;
-  const paymentId = toInt(paymentIdRaw);
+  const paymentIdRaw =
+    req.body?.data?.id ||
+    (req.body?.resource && req.body?.topic === "payment" ? req.body.resource : null);
 
+  const paymentId = toInt(paymentIdRaw);
   if (!paymentId) {
-    console.error("❌ Notificação sem paymentId:", req.body);
+    console.error("❌ Sem paymentId válido na notificação:", req.body);
     return res.sendStatus(400);
   }
 
   try {
     const pagamento = await mpGetPayment(paymentId);
 
-    const status = String(pagamento.status || "unknown");
-    const statusDetail = String(pagamento.status_detail || "");
+    const status = (pagamento.status || "unknown").toString();
+    const statusDetail = (pagamento.status_detail || "").toString();
     const valor = typeof pagamento.transaction_amount === "number" ? pagamento.transaction_amount : 0;
 
-    const externalReference = String(pagamento.external_reference || "").trim();
+    const userId =
+      (pagamento.metadata && pagamento.metadata.user_id) ||
+      pagamento.external_reference ||
+      null;
 
-    const userIdFromMeta = pagamento?.metadata?.user_id ? String(pagamento.metadata.user_id).trim() : "";
     const userIdFinal =
-      userIdFromMeta ||
-      (externalReference ? parseUserIdFromExternalRef(externalReference) : "");
+      (userId && userId.toString().trim())
+        ? userId.toString().trim()
+        : parseUserIdFromExternalRef(pagamento.external_reference);
 
-    const pmId = String(pagamento.payment_method_id || "");
+    const paymentMethodId = (pagamento.payment_method_id || "").toString();
     let metodo = "unknown";
-    if (pmId === "pix") metodo = "pix";
-    else if (pmId.startsWith("bol")) metodo = "boleto";
-    else if (pmId) metodo = "card";
+    if (paymentMethodId === "pix") metodo = "pix";
+    else if (paymentMethodId.startsWith("bol")) metodo = "boleto";
+    else if (paymentMethodId) metodo = "card";
+
+    const externalReference = (pagamento.external_reference || "").toString().trim();
 
     const local = await upsertPaymentV2({
       mpPaymentId: paymentId,
@@ -187,7 +203,7 @@ app.post("/pagamento", async (req, res) => {
 
     if (status === "approved") {
       if (!userIdFinal) {
-        console.warn("⚠️ approved sem userId. mpPaymentId:", paymentId);
+        console.warn("⚠️ Pagamento aprovado, mas sem userId para crédito. paymentId=", paymentId);
         return res.sendStatus(200);
       }
 
@@ -205,12 +221,12 @@ app.post("/pagamento", async (req, res) => {
     }
 
     return res.sendStatus(200);
-  } catch (err) {
-    const msg = err?.response?.data ? JSON.stringify(err.response.data) : (err?.message || String(err));
+  } catch (error) {
+    const msg = error?.response?.data ? JSON.stringify(error.response.data) : (error?.message || String(error));
     console.error("❌ Erro no webhook:", msg);
     return res.sendStatus(500);
   }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Webhook ativo na porta ${PORT} (MP_MODE=${MP_MODE})`));
