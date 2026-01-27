@@ -41,12 +41,12 @@ function mpAccessToken() {
   return token;
 }
 
-// ✅ Credenciais Parse (ENV > fallback hardcoded)
-const PARSE_APP_ID = (process.env.PARSE_APP_ID || "COLE_PARSE_APP_ID").trim();
-const PARSE_JS_KEY = (process.env.PARSE_JS_KEY || "COLE_PARSE_JS_KEY").trim();
-const PARSE_MASTER_KEY = (process.env.PARSE_MASTER_KEY || "COLE_PARSE_MASTER_KEY").trim();
-const PARSE_SERVER_URL = (process.env.PARSE_SERVER_URL || "https://parseapi.back4app.com").trim();
-
+// ✅ Credenciais de produção – verifique se os valores estão exatamente corretos:
+const MP_ACCESS_TOKEN = "APP_USR-2425109007347629-062014-4aebea93a2ceaaa33770018567f062c3-40790315";
+const PARSE_APP_ID     = "Fd6ksAkglKa2CFerh46JHEMOGsqbqXUIRfPOFLOz";
+const PARSE_JS_KEY     = "UKqUKChgVWiNIXmMQA1WIkdnjOFrt28cGy68UFWw";
+const PARSE_MASTER_KEY = "Ou385YEpEfoT3gZ6hLSbTfKZYQtTgNA7WNBnv7ia";
+const PARSE_SERVER_URL = "https://parseapi.back4app.com";
 // Init Parse
 Parse.initialize(PARSE_APP_ID, PARSE_JS_KEY, PARSE_MASTER_KEY);
 Parse.serverURL = PARSE_SERVER_URL;
