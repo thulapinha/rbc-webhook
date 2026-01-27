@@ -25,7 +25,7 @@ const MP_KEYS = {
     accessToken: (process.env.MP_ACCESS_TOKEN_TEST || "APP_USR-712868030410210-012422-c7031be0b237288c2ffe5c809e99e5f7-2510340016").trim(),
   },
   prod: {
-    accessToken: (process.env.MP_ACCESS_TOKEN || "APP_USR-2425109007347629-062014-4aebea93a2ceaaa33770018567f062c3-40790315").trim(),
+    accessToken: (process.env.MP_ACCESS_TOKEN || "APP_USR-f2170185-fbab-4ad0-958c-833afcb7e3b0").trim(),
   },
 };
 
