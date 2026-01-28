@@ -70,13 +70,13 @@ const MP_MODE = resolveMpMode(); // "test" | "prod"
 
 const MP_KEYS = {
   test: {
-    accessToken: (process.env.MP_ACCESS_TOKEN_TEST || "TEST-APP_USR-712868030410210-012422-c7031be0b237288c2ffe5c809e99e5f7-2510340016").trim(),
+    accessToken: (process.env.MP_ACCESS_TOKEN_TEST || "").trim(),
   },
   prod: {
-    // ✅ no Render você já tem MP_ACCESS_TOKEN (como na sua print)
-    accessToken: (process.env.MP_ACCESS_TOKEN || "APP_USR-2425109007347629-062014-4aebea93a2ceaaa33770018567f062c3-40790315").trim(),
+    accessToken: (process.env.MP_ACCESS_TOKEN || "").trim(),
   },
 };
+
 
 function mpAccessToken() {
   const mode = MP_MODE === "prod" ? "prod" : "test";
@@ -98,11 +98,21 @@ function mpAccessToken() {
 
 // Parse (ENV no Render, fallback no código)
 const PARSE_CFG = {
-  appId: (process.env.PARSE_APP_ID || "Fd6ksAkglKa2CFerh46JHEMOGsqbqXUIRfPOFLOz").trim(),
-  jsKey: (process.env.PARSE_JS_KEY || "UKqUKChgVWiNIXmMQA1WIkdnjOFrt28cGy68UFWw").trim(),
-  masterKey: (process.env.PARSE_MASTER_KEY || "Ou385YEpEfoT3gZ6hLSbTfKZYQtTgNA7WNBnv7ia").trim(),
-  serverURL: (process.env.PARSE_SERVER_URL || "https://parseapi.back4app.com").trim(),
+  serverURL: (process.env.PARSE_SERVER_URL || process.env.PARSE_SERVER || "").trim(),
+  appId: (process.env.PARSE_APP_ID || "").trim(),
+  masterKey: (process.env.PARSE_MASTER_KEY || "").trim(),
 };
+
+function assertEnv(name, value) {
+  if (!value) throw new Error(`${name} vazio. Configure no ENV do Render.`);
+  return value;
+}
+
+// valida env cedo
+assertEnv("PARSE_SERVER_URL", PARSE_CFG.serverURL);
+assertEnv("PARSE_APP_ID", PARSE_CFG.appId);
+assertEnv("PARSE_MASTER_KEY", PARSE_CFG.masterKey);
+
 
 Parse.initialize(PARSE_CFG.appId, PARSE_CFG.jsKey, PARSE_CFG.masterKey);
 Parse.serverURL = PARSE_CFG.serverURL;
