@@ -15,6 +15,24 @@ import crypto from "crypto";
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
+
+/**
+ * 🧠 Anti-duplicação (mesmo paymentId chegando 2x quase junto)
+ * Render free normalmente roda 1 instância — isso resolve praticamente todos os duplos.
+ */
+const _locks = new Map(); // key -> expiresAt
+function acquireLock(key, ttlMs = 5 * 60 * 1000) {
+  const now = Date.now();
+  const exp = _locks.get(key);
+  if (exp && exp > now) return false;
+  _locks.set(key, now + ttlMs);
+  return true;
+}
+function lockKeyForCredit(paymentId) {
+  const s = String(paymentId || "");
+  const h = crypto.createHash("sha1").update(`credit:${s}`).digest("hex");
+  return `credit:${h}`;
+}
 // =====================================================
 // 🔐 CONFIG — ENV primeiro, fallback (se você insistir)
 // =====================================================
@@ -339,6 +357,12 @@ async function processPaymentId(paymentId, requestId) {
   });
 
   if (status === "approved") {
+      const lk = lockKeyForCredit(paymentId);
+      if (!acquireLock(lk)) {
+        log("DUPLICATE_CREDIT_LOCK", { requestId, paymentId, userIdFinal });
+        return;
+      }
+
     if (!userIdFinal) {
       log("APPROVED_NO_USERID", { requestId, paymentId });
       return;
