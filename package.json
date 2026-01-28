@@ -1,6 +1,11 @@
 {
   "name": "rbc-webhook",
+  "version": "1.0.0",
   "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "axios": "^1.10.0",
     "express": "^5.1.0",
