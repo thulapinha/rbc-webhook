@@ -158,8 +158,56 @@ function pick(obj, ...keys) {
   return undefined;
 }
 
+function safeLower(value) {
+  return (value == null ? "" : String(value)).trim().toLowerCase();
+}
+
+function truthyFlag(value) {
+  if (value === true) return true;
+  const s = safeLower(value);
+  return s === "true" || s === "1" || s === "yes" || s === "sim";
+}
+
+function looksLikeSubscriptionRef(value) {
+  const s = safeLower(value);
+  if (!s) return false;
+  return s.startsWith("subscription:") ||
+    s.includes("rbc_subscription") ||
+    s.includes("subscription_payment") ||
+    s.includes("assinatura") ||
+    s.includes("subscription");
+}
+
+function extractSubscriptionPaymentIdFromRef(value) {
+  const s = (value || "").toString().trim();
+  const m = s.match(/^subscription:([A-Za-z0-9]{10})$/i);
+  if (m) return m[1];
+  return "";
+}
+
+function isSubscriptionPaymentFromMp(pagamento) {
+  const meta = pagamento?.metadata || {};
+  const externalReference = (pagamento?.external_reference || "").toString().trim();
+  return looksLikeSubscriptionRef(externalReference) ||
+    safeLower(meta?.purpose) === "rbc_subscription" ||
+    safeLower(meta?.payment_purpose) === "subscription" ||
+    truthyFlag(meta?.is_subscription_payment) ||
+    truthyFlag(meta?.do_not_credit_saldo) ||
+    meta?.subscription_payment_id != null;
+}
+
+function subscriptionPaymentIdFromMp(pagamento) {
+  const meta = pagamento?.metadata || {};
+  const fromMeta = (meta?.subscription_payment_id || "").toString().trim();
+  if (fromMeta) return fromMeta;
+  return extractSubscriptionPaymentIdFromRef(pagamento?.external_reference || "");
+}
+
 function parseUserIdFromExternalRef(externalRef) {
   const s = (externalRef || "").toString().trim();
+
+  // Assinatura NÃO é userId. Ex.: subscription:wDDs3tt1ZR
+  if (looksLikeSubscriptionRef(s)) return null;
 
   // Legado formatado: rbc:<userId>:<payId>:<metodo>
   if (s.startsWith("rbc:")) {
@@ -261,6 +309,16 @@ async function creditSaldoIdempotente({ userId, valor, referencia }) {
   let saldoAtual = user.get("saldo");
   if (typeof saldoAtual !== "number") saldoAtual = 0;
 
+  if (await isSubscriptionCreditReference({ referencia, userId, valor })) {
+    log("SUBSCRIPTION_CREDIT_BLOCKED", { userId, valor, referencia, novoSaldo: saldoAtual });
+    return {
+      duplicated: false,
+      ignored: true,
+      ignoredReason: "subscription_payment_does_not_credit_saldo",
+      novoSaldo: saldoAtual,
+    };
+  }
+
   let historico = user.get("historico") || [];
   if (!Array.isArray(historico)) historico = [];
 
@@ -285,6 +343,256 @@ async function creditSaldoIdempotente({ userId, valor, referencia }) {
   await hist.save(null, { useMasterKey: true });
 
   return { duplicated: false, novoSaldo };
+}
+
+async function findSubscriptionPaymentObject({
+  subscriptionPaymentId = "",
+  mpPaymentId = null,
+  externalReference = "",
+  userId = "",
+  amount = null,
+}) {
+  const queries = [];
+  const cleanSubId = (subscriptionPaymentId || "").toString().trim();
+  const cleanExternal = (externalReference || "").toString().trim();
+
+  if (cleanSubId) {
+    const qId = new Parse.Query("RbcSubscriptionPayment");
+    try {
+      const byId = await qId.get(cleanSubId, { useMasterKey: true });
+      if (byId) return byId;
+    } catch (_) {}
+
+    const qSubExt = new Parse.Query("RbcSubscriptionPayment");
+    qSubExt.equalTo("externalReference", `subscription:${cleanSubId}`);
+    queries.push(qSubExt);
+  }
+
+  if (cleanExternal) {
+    const qExt = new Parse.Query("RbcSubscriptionPayment");
+    qExt.equalTo("externalReference", cleanExternal);
+    queries.push(qExt);
+  }
+
+  if (mpPaymentId != null) {
+    const qMp = new Parse.Query("RbcSubscriptionPayment");
+    qMp.equalTo("mpPaymentId", Number(mpPaymentId));
+    queries.push(qMp);
+  }
+
+  if (userId && amount != null) {
+    const qUser = new Parse.Query("RbcSubscriptionPayment");
+    qUser.equalTo("userId", String(userId).trim());
+    qUser.equalTo("amount", Number(amount));
+    qUser.containedIn("status", ["pending", "in_process", "approved", "paid"]);
+    qUser.descending("createdAt");
+    queries.push(qUser);
+  }
+
+  if (!queries.length) return null;
+  const q = queries.length === 1 ? queries[0] : Parse.Query.or(...queries);
+  q.descending("createdAt");
+  q.limit(1);
+  return await q.first({ useMasterKey: true });
+}
+
+async function upsertSubscriptionPaymentFromMp({
+  pagamento,
+  paymentId,
+  status,
+  statusDetail,
+  valor,
+  externalReference,
+  userId,
+  requestId,
+  approvedAt,
+  paidAt,
+  mpLastUpdatedAt,
+  mpPaymentMethodId,
+  mpPaymentTypeId,
+}) {
+  const subId = subscriptionPaymentIdFromMp(pagamento);
+  const local = await findSubscriptionPaymentObject({
+    subscriptionPaymentId: subId,
+    mpPaymentId: paymentId,
+    externalReference,
+    userId,
+    amount: valor,
+  });
+
+  if (!local) {
+    log("SUBSCRIPTION_PAYMENT_NOT_FOUND", {
+      requestId,
+      paymentId,
+      subscriptionPaymentId: subId || null,
+      externalReference: externalReference || null,
+      userId: userId || null,
+      valor,
+    });
+    return null;
+  }
+
+  const tdata = pagamento?.point_of_interaction?.transaction_data || {};
+  local.set("mpPaymentId", paymentId);
+  local.set("status", status || "unknown");
+  if (statusDetail) local.set("statusDetail", statusDetail);
+  if (typeof valor === "number" && valor > 0) {
+    local.set("amount", valor);
+    local.set("valor", valor);
+  }
+  if (externalReference) local.set("externalReference", externalReference);
+  if (userId && !local.get("userId")) local.set("userId", userId);
+  local.set("paymentPurpose", "subscription");
+  local.set("isSubscriptionPayment", true);
+  local.set("doNotCreditSaldo", true);
+  local.set("creditToUser", false);
+  local.set("financialOrigin", "ASSINATURA_PLANO");
+  if (mpPaymentMethodId) local.set("mpPaymentMethodId", mpPaymentMethodId);
+  if (mpPaymentTypeId) local.set("mpPaymentTypeId", mpPaymentTypeId);
+  if (approvedAt) local.set("approvedAt", approvedAt);
+  if (paidAt) local.set("paidAt", paidAt);
+  if (mpLastUpdatedAt) local.set("mpLastUpdatedAt", mpLastUpdatedAt);
+  if (tdata?.qr_code) local.set("qrCodeText", String(tdata.qr_code));
+  if (tdata?.qr_code_base64) local.set("qrCodeBase64", String(tdata.qr_code_base64));
+  if (tdata?.ticket_url) local.set("ticketUrl", String(tdata.ticket_url));
+  local.set("webhookLastRequestId", requestId || "");
+  local.set("webhookSource", "render_mercado_pago_subscription_guard");
+  await local.save(null, { useMasterKey: true });
+  return local;
+}
+
+async function isSubscriptionCreditReference({ referencia, userId, valor }) {
+  if (looksLikeSubscriptionRef(referencia)) return true;
+  const raw = (referencia || "").toString().trim();
+  const clean = raw.replace(/^ref:/i, "").replace(/^mp:/i, "").trim();
+  const mpId = toInt(clean);
+  const found = await findSubscriptionPaymentObject({
+    mpPaymentId: mpId,
+    externalReference: raw,
+    userId,
+    amount: valor,
+  });
+  return !!found;
+}
+
+async function masterUsersForPush() {
+  const masterEmails = (process.env.RBC_MASTER_EMAILS || "rbcservico32@gmail.com")
+    .split(",")
+    .map((x) => x.trim().toLowerCase())
+    .filter(Boolean);
+
+  const queries = [];
+  if (masterEmails.length) {
+    const byEmail = new Parse.Query(Parse.User);
+    byEmail.containedIn("email", masterEmails);
+    queries.push(byEmail);
+
+    const byUsername = new Parse.Query(Parse.User);
+    byUsername.containedIn("username", masterEmails);
+    queries.push(byUsername);
+  }
+
+  for (const field of ["role", "adminRole", "perfil", "accountType", "tipoConta"]) {
+    const q = new Parse.Query(Parse.User);
+    q.containedIn(field, ["master", "MASTER", "admin_master", "ADMIN_MASTER"]);
+    queries.push(q);
+  }
+
+  const qMaster = new Parse.Query(Parse.User);
+  qMaster.equalTo("isMaster", true);
+  queries.push(qMaster);
+
+  const qAdminMaster = new Parse.Query(Parse.User);
+  qAdminMaster.equalTo("isAdminMaster", true);
+  queries.push(qAdminMaster);
+
+  const q = queries.length === 1 ? queries[0] : Parse.Query.or(...queries);
+  q.limit(200);
+  return await q.find({ useMasterKey: true });
+}
+
+async function notifyMasterSubscription({ subscriptionPayment, pagamento, requestId }) {
+  if (!subscriptionPayment) return;
+  const dedupeKey = `subscription_admin:${subscriptionPayment.id}`;
+
+  const oldQ = new Parse.Query("Notifications");
+  oldQ.equalTo("dedupeKey", dedupeKey);
+  const existing = await oldQ.first({ useMasterKey: true });
+  if (!existing) {
+    const plan = (subscriptionPayment.get("planLabel") || subscriptionPayment.get("plan") || "Assinatura").toString();
+    const amount = Number(subscriptionPayment.get("amount") || pagamento?.transaction_amount || 0);
+    const email = (subscriptionPayment.get("email") || pagamento?.payer?.email || "").toString();
+    const nome = (subscriptionPayment.get("nome") || subscriptionPayment.get("name") || email || "Cliente").toString();
+    const body = `${nome} assinou ${plan} por R$ ${amount.toFixed(2).replace(".", ",")}.`;
+
+    const note = new Parse.Object("Notifications");
+    note.set("title", "Nova assinatura RBC");
+    note.set("body", body);
+    note.set("level", "info");
+    note.set("audience", "admin");
+    note.set("targetPlatform", "mobile");
+    note.set("sendPush", false);
+    note.set("read", false);
+    note.set("kind", "subscription_admin_ok");
+    note.set("route", "/admin/subscriptions");
+    note.set("dedupeKey", dedupeKey);
+    note.set("subscriptionPaymentId", subscriptionPayment.id);
+    note.set("sourceUserId", subscriptionPayment.get("userId") || "");
+    note.set("email", email);
+    note.set("amount", String(amount));
+    note.set("valor", amount);
+    note.set("mpPaymentId", pagamento?.id || null);
+    await note.save(null, { useMasterKey: true });
+  }
+
+  if (subscriptionPayment.get("renderMasterPushAt")) return;
+
+  const masters = await masterUsersForPush();
+  const ids = masters.map((u) => u.id).filter(Boolean);
+  if (!ids.length) {
+    log("SUBSCRIPTION_MASTER_PUSH_NO_MASTER", { requestId, subscriptionPaymentId: subscriptionPayment.id });
+    return;
+  }
+
+  const q1 = new Parse.Query(Parse.Installation);
+  q1.equalTo("isMaster", true);
+
+  const q2 = new Parse.Query(Parse.Installation);
+  q2.containedIn("userId", ids);
+
+  const q3 = new Parse.Query(Parse.Installation);
+  q3.containedIn("user", masters);
+
+  const where = Parse.Query.or(q1, q2, q3);
+  const amount = Number(subscriptionPayment.get("amount") || pagamento?.transaction_amount || 0);
+  const plan = (subscriptionPayment.get("planLabel") || subscriptionPayment.get("plan") || "Assinatura").toString();
+  const email = (subscriptionPayment.get("email") || pagamento?.payer?.email || "").toString();
+
+  await Parse.Push.send({
+    where,
+    data: {
+      title: "Nova assinatura RBC",
+      alert: `${email || "Cliente"} assinou ${plan} por R$ ${amount.toFixed(2).replace(".", ",")}.`,
+      body: `${email || "Cliente"} assinou ${plan} por R$ ${amount.toFixed(2).replace(".", ",")}.`,
+      sound: "moeda",
+      android_channel_id: "rbc_high_importance_channel_moeda_v1",
+      channel_id: "rbc_high_importance_channel_moeda_v1",
+      notification_channel_id: "rbc_high_importance_channel_moeda_v1",
+      badge: "Increment",
+      type: "subscription_admin_ok",
+      deep_link: "/admin/subscriptions",
+      click_action: "FLUTTER_NOTIFICATION_CLICK",
+      paymentId: subscriptionPayment.id,
+      subscriptionPaymentId: subscriptionPayment.id,
+      mpPaymentId: pagamento?.id || null,
+      amount: String(amount),
+      valor: amount,
+      notificationScope: "master_only",
+    },
+  }, { useMasterKey: true });
+
+  subscriptionPayment.set("renderMasterPushAt", new Date());
+  await subscriptionPayment.save(null, { useMasterKey: true });
 }
 
 async function findExistingPaymentObject({
@@ -427,6 +735,44 @@ async function processPaymentId(paymentId, requestId) {
     externalReference: externalReference || null,
   });
 
+  if (isSubscriptionPaymentFromMp(pagamento)) {
+    const subPayment = await upsertSubscriptionPaymentFromMp({
+      pagamento,
+      paymentId,
+      status,
+      statusDetail,
+      valor,
+      externalReference,
+      userId: userIdFinal || "",
+      requestId,
+      approvedAt,
+      paidAt,
+      mpLastUpdatedAt,
+      mpPaymentMethodId: paymentMethodId,
+      mpPaymentTypeId: paymentTypeId,
+    });
+
+    log("SUBSCRIPTION_PAYMENT_ROUTED", {
+      requestId,
+      paymentId,
+      status,
+      userIdFinal: userIdFinal || null,
+      externalReference: externalReference || null,
+      subscriptionPaymentId: subPayment?.id || subscriptionPaymentIdFromMp(pagamento) || null,
+      credited: false,
+    });
+
+    if (status === "approved" && subPayment) {
+      try {
+        await notifyMasterSubscription({ subscriptionPayment: subPayment, pagamento, requestId });
+      } catch (e) {
+        log("SUBSCRIPTION_MASTER_NOTIFY_FAIL", { requestId, paymentId, error: errToObj(e) });
+      }
+    }
+
+    return;
+  }
+
   const local = await upsertPaymentV2({
     mpPaymentId: paymentId,
     status,
@@ -501,6 +847,7 @@ app.get("/diag", (_req, res) => {
       jsKeyMasked: maskSecret(PARSE_CFG.jsKey),
       hasMasterKey: !!PARSE_CFG.masterKey,
     },
+    subscriptionGuard: "enabled-no-credit-to-saldo-v1",
     expectedEnv: {
       render: [
         "MP_ACCESS_TOKEN",
