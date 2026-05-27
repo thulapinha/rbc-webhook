@@ -595,6 +595,112 @@ async function notifyMasterSubscription({ subscriptionPayment, pagamento, reques
   await subscriptionPayment.save(null, { useMasterKey: true });
 }
 
+
+async function notifyMasterDeposit({ local, pagamento, userId, valor, metodo, requestId }) {
+  if (!local) return;
+  if (local.get("renderMasterDirectPushAt") || local.get("pushAdminDirectNotifiedAt")) return;
+
+  const amount = Number(valor || local.get("valor") || pagamento?.transaction_amount || 0);
+  const user = userId ? await new Parse.Query(Parse.User).get(String(userId), { useMasterKey: true }).catch(() => null) : null;
+  const nome = (user?.get("name") || user?.get("nome") || local.get("nome") || local.get("payerName") || user?.get("email") || local.get("email") || "Cliente").toString();
+  const email = (user?.get("email") || local.get("email") || pagamento?.payer?.email || "").toString();
+  const method = (metodo || local.get("metodo") || pagamento?.payment_method_id || "pix").toString().toUpperCase();
+  const mpPaymentId = pagamento?.id || local.get("mpPaymentId") || null;
+  const dedupeKey = `payment_admin:${local.id || mpPaymentId || requestId}`;
+  const body = `${nome} depositou R$ ${amount.toFixed(2).replace(".", ",")} via ${method}.`;
+
+  // Reserva flags antes do save final para o afterSave do Back4App não mandar duplicado.
+  const now = new Date();
+  local.set("adminInboxCreatedAt", now);
+  local.set("pushAdminDirectNotifiedAt", now);
+  local.set("pushAdminNotifiedAt", now);
+  local.set("renderMasterDirectPushAt", now);
+  local.set("lastMasterDepositPushBody", body);
+
+  const oldQ = new Parse.Query("Notifications");
+  oldQ.equalTo("dedupeKey", dedupeKey);
+  const existing = await oldQ.first({ useMasterKey: true });
+  if (!existing) {
+    const note = new Parse.Object("Notifications");
+    note.set("title", "Pagamento recebido");
+    note.set("body", body);
+    note.set("level", "info");
+    note.set("audience", "admin");
+    note.set("targetPlatform", "mobile");
+    note.set("sendPush", false);
+    note.set("read", false);
+    note.set("kind", "payment_admin_ok");
+    note.set("route", "/adminPanel");
+    note.set("dedupeKey", dedupeKey);
+    note.set("paymentObjectId", local.id || "");
+    note.set("sourceUserId", userId || "");
+    note.set("email", email);
+    note.set("customerName", nome);
+    note.set("payerName", nome);
+    note.set("metodo", method);
+    note.set("amount", String(amount));
+    note.set("valor", amount);
+    note.set("paidAmount", amount);
+    note.set("transaction_amount", amount);
+    note.set("mpPaymentId", mpPaymentId);
+    await note.save(null, { useMasterKey: true });
+  }
+
+  const masters = await masterUsersForPush();
+  const ids = masters.map((u) => u.id).filter(Boolean);
+  if (!ids.length) {
+    log("DEPOSIT_MASTER_PUSH_NO_MASTER", { requestId, paymentId: local.id || null, mpPaymentId });
+    return;
+  }
+
+  const q1 = new Parse.Query(Parse.Installation);
+  q1.equalTo("isMaster", true);
+
+  const q2 = new Parse.Query(Parse.Installation);
+  q2.containedIn("userId", ids);
+
+  const q3 = new Parse.Query(Parse.Installation);
+  q3.containedIn("user", masters);
+
+  const where = Parse.Query.or(q1, q2, q3);
+  await Parse.Push.send({
+    where,
+    data: {
+      title: "Pagamento recebido",
+      alert: body,
+      body,
+      sound: "moeda",
+      android_channel_id: "rbc_high_importance_channel_moeda_v1",
+      channel_id: "rbc_high_importance_channel_moeda_v1",
+      notification_channel_id: "rbc_high_importance_channel_moeda_v1",
+      badge: "Increment",
+      type: "payment_admin_ok",
+      deep_link: "/adminPanel",
+      click_action: "FLUTTER_NOTIFICATION_CLICK",
+      paymentObjectId: local.id || "",
+      paymentId: local.id || "",
+      mpPaymentId,
+      userId: userId || "",
+      sourceUserId: userId || "",
+      customerName: nome,
+      payerName: nome,
+      name: nome,
+      email,
+      metodo: method,
+      method,
+      amount: String(amount),
+      valor: amount,
+      value: amount,
+      paidAmount: amount,
+      transaction_amount: amount,
+      dedupeKey,
+      notificationScope: "master_only",
+    },
+  }, { useMasterKey: true });
+
+  log("DEPOSIT_MASTER_PUSH_SENT", { requestId, paymentObjectId: local.id || null, mpPaymentId, userId, amount, masterCount: ids.length });
+}
+
 async function findExistingPaymentObject({
   mpPaymentId,
   paymentObjectId,
@@ -817,6 +923,13 @@ async function processPaymentId(paymentId, requestId) {
     local.set("credited", true);
     local.set("creditedAt", new Date());
     local.set("creditDuplicated", credit.duplicated === true);
+
+    try {
+      await notifyMasterDeposit({ local, pagamento, userId: userIdFinal, valor, metodo, requestId });
+    } catch (e) {
+      log("DEPOSIT_MASTER_NOTIFY_FAIL", { requestId, paymentId, error: errToObj(e) });
+    }
+
     await local.save(null, { useMasterKey: true });
 
     log("CREDIT_APPLIED", {
@@ -848,6 +961,7 @@ app.get("/diag", (_req, res) => {
       hasMasterKey: !!PARSE_CFG.masterKey,
     },
     subscriptionGuard: "enabled-no-credit-to-saldo-v1",
+    masterDepositPushGuard: "enabled-render-master-direct-payment-push-v1",
     expectedEnv: {
       render: [
         "MP_ACCESS_TOKEN",
